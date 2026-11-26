@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
-"""Entrypoint for the news-image-20261126 make.fun bounty entry.
+"""Deliver the news-image-20261126 entry to /output/entry.png.
 
-Verifies entry.png rigorously with the standard library only, delivers it
-to /output/entry.png, re-inspects the delivered copy, and repeats the whole
-delivery once more, requiring byte-identical results both times.
+Reads entry.png from beside this file, validates it end to end with the
+standard library only, copies it to the output directory, validates the
+copy again, and then does the whole delivery a second time, requiring
+both runs to produce identical bytes (the bounty runs the program
+twice and requires identical output).
 
-Checks on the PNG:
-  * file size <= 1 MiB
-  * 8-byte PNG signature
-  * first chunk is IHDR declaring 1024x1024
-  * every chunk's stored CRC-32 matches zlib.crc32(type + data)
-  * the joined IDAT payload zlib-decompresses cleanly
-  * an IEND chunk is present and is the last chunk, with no trailing bytes
+Validation covers: the file is at most 1 MiB; it starts with the PNG
+signature; its first chunk is an IHDR declaring 1024x1024; every chunk
+carries a CRC-32 that matches its type and data; the joined IDAT
+payload decompresses cleanly; an IEND chunk is present and is the last
+thing in the file, with no trailing bytes.
 
-Exit code 0 and an OK line on success; non-zero with a stderr message on
-any failure. No network access.
+Exit code 0 with an OK line on success; non-zero with a message on
+stderr on any failure. No network access, deterministic.
 """
 import hashlib
 import os
@@ -23,96 +23,96 @@ import struct
 import sys
 import zlib
 
-MAX_BYTES = 1024 * 1024  # 1 MiB
-EXPECTED_W = 1024
-EXPECTED_H = 1024
-PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
-OUTPUT_PATH = "/output/entry.png"
+LIMIT_BYTES = 1024 * 1024
+SIZE_W, SIZE_H = 1024, 1024
+MAGIC = b"\x89PNG\r\n\x1a\n"
 
 
-def fail(msg):
-    print(f"ERROR: {msg}", file=sys.stderr)
-    sys.exit(1)
+class EntryError(Exception):
+    """Raised for any validation or delivery problem."""
 
 
-def inspect_png(path):
-    """Return (size, sha256_hex) after fully validating the PNG at path."""
-    try:
-        with open(path, "rb") as fh:
-            data = fh.read()
-    except OSError as exc:
-        fail(f"cannot read {path}: {exc}")
+def read_chunks(data):
+    """Yield (type, payload) for each chunk of a PNG byte string.
 
-    if len(data) > MAX_BYTES:
-        fail(f"{path}: {len(data)} bytes exceeds the 1 MiB limit")
-    if not data.startswith(PNG_SIGNATURE):
-        fail(f"{path}: missing PNG signature")
-
-    pos = len(PNG_SIGNATURE)
-    first = True
-    idat = bytearray()
-    seen_iend = False
+    Stops at IEND (which must be the last chunk) and raises EntryError
+    on any structural problem: bad signature, truncation, CRC mismatch,
+    missing IEND, or bytes after IEND.
+    """
+    if not data.startswith(MAGIC):
+        raise EntryError("missing PNG signature")
+    pos = len(MAGIC)
     while pos < len(data):
         if pos + 8 > len(data):
-            fail(f"{path}: truncated chunk header at offset {pos}")
-        (length,) = struct.unpack(">I", data[pos:pos + 4])
-        ctype = data[pos + 4:pos + 8]
-        if pos + 12 + length > len(data):
-            fail(f"{path}: truncated {ctype!r} chunk at offset {pos}")
-        chunk_data = data[pos + 8:pos + 8 + length]
-        (stored_crc,) = struct.unpack(
-            ">I", data[pos + 8 + length:pos + 12 + length])
-        if zlib.crc32(ctype + chunk_data) & 0xFFFFFFFF != stored_crc:
-            fail(f"{path}: CRC mismatch in {ctype!r} chunk at offset {pos}")
-        if first:
-            if ctype != b"IHDR":
-                fail(f"{path}: first chunk is {ctype!r}, not IHDR")
-            if length != 13:
-                fail(f"{path}: IHDR length {length}, expected 13")
-            w, h = struct.unpack(">II", chunk_data[:8])
-            if (w, h) != (EXPECTED_W, EXPECTED_H):
-                fail(f"{path}: dimensions {w}x{h}, expected "
-                     f"{EXPECTED_W}x{EXPECTED_H}")
-            first = False
-        if ctype == b"IDAT":
-            idat.extend(chunk_data)
-        if ctype == b"IEND":
-            if pos + 12 + length != len(data):
-                fail(f"{path}: trailing bytes after IEND")
-            seen_iend = True
-            break
-        pos += 12 + length
-    if not seen_iend:
-        fail(f"{path}: no IEND chunk")
+            raise EntryError(f"truncated chunk header at offset {pos}")
+        (size,) = struct.unpack(">I", data[pos:pos + 4])
+        kind = data[pos + 4:pos + 8]
+        end = pos + 12 + size
+        if end > len(data):
+            raise EntryError(f"truncated {kind!r} chunk at offset {pos}")
+        payload = data[pos + 8:pos + 8 + size]
+        (crc,) = struct.unpack(">I", data[pos + 8 + size:end])
+        if zlib.crc32(kind + payload) & 0xFFFFFFFF != crc:
+            raise EntryError(f"CRC mismatch in {kind!r} chunk at offset {pos}")
+        yield kind, payload
+        pos = end
+        if kind == b"IEND":
+            if pos != len(data):
+                raise EntryError("trailing bytes after IEND")
+            return
+    raise EntryError("no IEND chunk")
+
+
+def validate_png(path):
+    """Return (size, sha256) of the PNG at path after full validation."""
     try:
-        zlib.decompress(bytes(idat))
+        with open(path, "rb") as handle:
+            data = handle.read()
+    except OSError as exc:
+        raise EntryError(f"cannot read {path}: {exc}")
+    if len(data) > LIMIT_BYTES:
+        raise EntryError(f"{path}: {len(data)} bytes exceeds the 1 MiB limit")
+    chunks = list(read_chunks(data))
+    if not chunks or chunks[0][0] != b"IHDR":
+        raise EntryError(f"{path}: first chunk is not IHDR")
+    width, height = struct.unpack(">II", chunks[0][1][:8])
+    if (width, height) != (SIZE_W, SIZE_H):
+        raise EntryError(f"{path}: dimensions {width}x{height}, "
+                         f"expected {SIZE_W}x{SIZE_H}")
+    try:
+        zlib.decompress(b"".join(p for k, p in chunks if k == b"IDAT"))
     except zlib.error as exc:
-        fail(f"{path}: IDAT payload does not decompress: {exc}")
+        raise EntryError(f"{path}: IDAT payload does not decompress: {exc}")
     return len(data), hashlib.sha256(data).hexdigest()
 
 
-def deliver_once():
-    """Copy entry.png next to this file to /output/entry.png, verified."""
+def deliver():
+    """Copy entry.png to the output directory, verified both sides."""
     here = os.path.dirname(os.path.abspath(__file__))
-    src = os.path.join(here, "entry.png")
-    size, digest = inspect_png(src)
-    out_dir = os.environ.get("MAKEFUN_OUTPUT_DIR") or os.path.dirname(OUTPUT_PATH)
+    source = os.path.join(here, "entry.png")
+    before = validate_png(source)
+    out_dir = os.environ.get("MAKEFUN_OUTPUT_DIR") or "/output"
     os.makedirs(out_dir, exist_ok=True)
-    dst = os.path.join(out_dir, "entry.png")
-    shutil.copyfile(src, dst)
-    size2, digest2 = inspect_png(dst)
-    if (size, digest) != (size2, digest2):
-        fail("delivered copy differs from source")
-    return size, digest
+    target = os.path.join(out_dir, "entry.png")
+    shutil.copyfile(source, target)
+    after = validate_png(target)
+    if before != after:
+        raise EntryError("delivered copy differs from source")
+    return before
 
 
-def main():
-    size1, digest1 = deliver_once()
-    size2, digest2 = deliver_once()
-    if (size1, digest1) != (size2, digest2):
-        fail("two deliveries differ: program is not deterministic")
-    print(f"OK: entry.png {size1} bytes sha256={digest1}")
+def run():
+    first = deliver()
+    second = deliver()
+    if first != second:
+        raise EntryError("two deliveries differ: program is not deterministic")
+    size, digest = first
+    print(f"OK: entry.png {size} bytes sha256={digest}")
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        run()
+    except EntryError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        sys.exit(1)
