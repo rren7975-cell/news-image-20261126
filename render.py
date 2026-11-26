@@ -2,9 +2,10 @@
 """Render the 26 November 2026 front page (1024x1024).
 
 Fifty stories that happened, or were first reported, on Thursday
-26 November 2026 in any time zone, across nine regions, with thirty-one
-drawn pictures (a lead scene plus thirty pictograms), a UTC timeline of
-the day's verified times, and attribution on contested claims. Heroes:
+26 November 2026 in any time zone, across nine regions, with thirty-two
+drawn pictures (a lead scene, thirty pictograms and a world map with
+pins marking the nine regions), a date check, a UTC timeline of the
+day's verified times, and attribution on contested claims. Heroes:
 the Macy's centenary parade postponed by the Thanksgiving storm (the
 first weather postponement in its hundred-year history), the storm
 itself, and the Cairo tanker fire that killed thirty-one people.
@@ -14,10 +15,10 @@ continuing 26 November development, fires still burning. Every story
 was re-checked against 26 November reporting.
 
 The page is drawn with PIL only (no network, deterministic): masthead,
-date, three leads with a drawn lead illustration, thirty briefs and a
-seventeen-item "Also on 26 November" strip, then a UTC timeline and
-sources. Stories live in data tables at the bottom of this file; the
-renderer above them is generic.
+date, three leads with a drawn lead illustration, thirty briefs, a world
+map with pins and a date check, and a fourteen-item "Also on 26 November"
+strip, then a UTC timeline and sources. Stories live in data tables at
+the bottom of this file; the renderer above them is generic.
 
 Run: python3 render.py  -> writes entry.png next to this file.
 """
@@ -252,6 +253,71 @@ def parade_scene(draw, x, y, w, h):
         draw.ellipse([px, street_y + 3, px + 7, street_y + 10], fill=COLORS["ink"])
 
 
+# ---- world map: coarse continent outlines in (lon, lat), drawn on an
+# equirectangular projection so the nine regions can be pinned. ----
+CONTINENTS = [
+    # North America
+    [(-168, 66), (-140, 70), (-120, 72), (-95, 80), (-80, 73), (-55, 62),
+     (-60, 47), (-70, 42), (-75, 35), (-80, 26), (-90, 21), (-97, 16),
+     (-105, 20), (-115, 30), (-125, 40), (-125, 49), (-145, 60), (-165, 60)],
+    # South America
+    [(-80, 10), (-60, 10), (-35, -8), (-40, -20), (-50, -30), (-60, -38),
+     (-70, -52), (-73, -40), (-80, -20), (-80, -5)],
+    # Africa
+    [(-17, 15), (-10, 30), (0, 36), (10, 37), (20, 32), (30, 31), (35, 28),
+     (43, 12), (51, 11), (48, 0), (40, -15), (35, -25), (28, -33), (18, -35),
+     (12, -18), (9, 4), (-8, 5)],
+    # Europe
+    [(-10, 36), (-9, 43), (-2, 49), (0, 51), (5, 53), (8, 57), (10, 59),
+     (18, 56), (21, 55), (24, 60), (30, 70), (40, 68), (45, 60), (40, 50),
+     (35, 45), (30, 40), (25, 36), (20, 40), (12, 44), (8, 44), (3, 43),
+     (-2, 37)],
+    # Asia
+    [(40, 68), (60, 70), (80, 73), (100, 76), (120, 73), (140, 72),
+     (160, 70), (178, 66), (170, 60), (162, 56), (158, 50), (142, 45),
+     (140, 38), (130, 35), (127, 33), (120, 30), (110, 20), (105, 10),
+     (100, 8), (95, 15), (90, 22), (85, 20), (80, 15), (77, 8), (72, 20),
+     (66, 25), (60, 25), (55, 26), (50, 30), (48, 30), (44, 29), (40, 36)],
+    # Australia
+    [(113, -22), (114, -30), (115, -35), (124, -33), (132, -32), (137, -35),
+     (140, -38), (145, -38), (150, -37), (153, -32), (153, -27), (150, -22),
+     (146, -19), (142, -15), (142, -11), (137, -12), (135, -12), (132, -11),
+     (130, -13), (126, -14), (122, -17), (118, -20)],
+]
+
+# One pin per region: (lon, lat) of the story's place.
+PINS = [(-74, 41), (-46, -23), (0, 51), (4, 51), (31, 30), (3, 7),
+        (77, 29), (116, 40), (149, -35)]
+
+
+def draw_map(draw, x, y, w, h):
+    """A small world map with a pin on each of the nine regions."""
+    sea = (234, 239, 244)
+    land = (118, 130, 143)
+    grid = (205, 212, 220)
+    draw.rectangle([x, y, x + w, y + h], fill=sea)
+
+    def proj(lon, lat):
+        px = x + (lon + 180) / 360.0 * w
+        py = y + (85 - lat) / 145.0 * h
+        return (px, py)
+
+    # graticule so the strip reads as a map, not a stripe
+    for lon in range(-120, 181, 60):
+        gx, _ = proj(lon, 0)
+        draw.line([(gx, y), (gx, y + h)], fill=grid, width=1)
+    for lat in (60, 30, 0, -30):
+        _, gy = proj(0, lat)
+        draw.line([(x, gy), (x + w, gy)], fill=grid, width=1)
+    for poly in CONTINENTS:
+        draw.polygon([proj(lon, lat) for lon, lat in poly], fill=land)
+    for lon, lat in PINS:
+        px, py = proj(lon, lat)
+        draw.ellipse([px - 4, py - 4, px + 4, py + 4], fill=COLORS["red"],
+                     outline=COLORS["white"], width=1)
+    draw.rectangle([x, y, x + w, y + h], outline=COLORS["grey"], width=1)
+
+
 # ---- the day's stories: (region, colour, headline, dek, icon) ----
 LEAD_ONE = ("LEAD · PARADE", "red", "NEW YORK",
             "Macy's 100th parade postponed by storm",
@@ -336,9 +402,7 @@ ALSO = ("Mumbai marks 18 years since the 26/11 attacks · Arsenal host "
         "still ablaze after overnight drone strikes · Trump: Iran war "
         "funded through January · Sheikh Hasina seeks return to "
         "Bangladesh on 16 Dec · IPL 2027 auction draws 1,220 players · "
-        "Vietnam advances sustainable agriculture · South Korea prepares "
-        "to reinforce its EV industry · France seeks independence in "
-        "critical-mineral supplies · Britain investigates legacy of "
+        "Britain investigates legacy of "
         "nuclear weapons testing · Russia increases defence allocations · "
         "Ukraine and Hungary pursue renewed economic cooperation · Serbia "
         "aims to curb trash TV and move to a 4-day week · El Salvador "
@@ -348,7 +412,7 @@ ALSO = ("Mumbai marks 18 years since the 26/11 attacks · Arsenal host "
 
 TIMELINE = ("00:11 Houthi strike hits Jazan Port  ·  00:21 Daesh attack in "
            "Hasaka  ·  02:14 Cairo toll put at 31 dead  ·  02:46 European "
-           "court rules on pushbacks  ·  09:00 EU summit opens in Brussels")
+           "court rules on pushbacks")
 
 FOOTNOTE = ("Sources: Reuters · AP · AFP · Gulf News · Arab News · "
             "Manila Times · Indian Express — Contested claims are labelled "
@@ -379,7 +443,7 @@ def render_page():
     y += 5
     d.text((EDGE, y),
            "The day's world news in one picture  ·  50 stories  ·  9 regions  ·  "
-           "31 drawn  ·  claims labelled  ·  UTC timeline",
+           "32 drawn  ·  map with pins  ·  date-checked  ·  UTC timeline",
            font=load_font("sans", 14), fill=COLORS["grey"])
     y += 20
     y = hline(d, y, 1)
@@ -397,8 +461,8 @@ def render_page():
     y = paint_lines(d, flow_text(d, dek, load_font("serif", 18), BODY_W),
                     load_font("serif", 18), EDGE, y, 23)
     y += 5
-    parade_scene(d, EDGE, y, BODY_W, 36)
-    y += 36 + 7
+    parade_scene(d, EDGE, y, BODY_W, 22)
+    y += 22 + 7
     y = hline(d, y, 2)
     y += 6
 
@@ -420,9 +484,21 @@ def render_page():
     y = hline(d, y, 2)
     y += 6
 
+    # ---- world map + date check ----
+    d.text((EDGE, y), "MAP · DATE CHECK", font=load_font("sans_b", 12),
+           fill=COLORS["red"])
+    d.text((EDGE + 152, y),
+           "every story dated 26 Nov 2026 · pins mark the nine regions",
+           font=load_font("sans", 12), fill=COLORS["grey"])
+    y += 15
+    draw_map(d, EDGE, y, BODY_W, 44)
+    y += 44 + 5
+    y = hline(d, y, 2)
+    y += 5
+
     # ---- 30 briefs, 2 columns x 15 rows ----
     assert len(BRIEFS) == 30, f"briefs: {len(BRIEFS)}"
-    row_h = 28
+    row_h = 27
     for r in range(15):
         for c in range(2):
             tg, col, head, dk, icon = BRIEFS[r * 2 + c]
